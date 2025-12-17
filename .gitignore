@@ -1,14 +1,14 @@
 *.*
 *
+/am-kernels
 !*/
 !/nemu/*
 !/nexus-am/*
 !/nanos-lite/*
 !/navy-apps/*
 !/npc/*
+!/ysyx_c/*
 !Makefile
 !README.md
 !.gitignore
 !init.sh
-!/ysyx-c/*
-/am-kernels
