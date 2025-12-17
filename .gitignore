@@ -1,7 +1,5 @@
 *.*
 *
-/am-kernels
-!*/
 !/nemu/*
 !/nexus-am/*
 !/nanos-lite/*
