@@ -5,6 +5,7 @@
 !/nanos-lite/*
 !/navy-apps/*
 !/npc/*
+!/ysyx_c/
 !/ysyx_c/*
 !/ysyx_c/**
 !Makefile
