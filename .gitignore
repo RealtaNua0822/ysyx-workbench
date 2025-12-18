@@ -6,6 +6,7 @@
 !/navy-apps/*
 !/npc/*
 !/ysyx_c/*
+!/ysyx_c/**
 !Makefile
 !README.md
 !.gitignore
