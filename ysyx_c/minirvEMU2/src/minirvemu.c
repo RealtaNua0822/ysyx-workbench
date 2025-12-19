@@ -2,28 +2,17 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
-
-#include "amtest.h"
-
 
 // ==============================
 // 配置与内存定义
 // ==============================
 
 #define MEM_SIZE        (1024 * 1024)           // 1MB RAM
-#define FB_BASE         0x20000000              // Framebuffer基地址
-#define FB_SIZE         (400 * 300 * 4)         // 400x300 RGBA (1.2MB)
 #define EBREAK_OPCODE   0x00100073              // ebreak instruction
 
 uint8_t memory[MEM_SIZE];
 uint32_t reg[32] = {0};
 uint32_t pc = 0;
-
-// Framebuffer (独立于内存)
-static uint32_t framebuffer[400 * 300];  // 400x300像素
-static int screen_dirty = 0;              // 标记屏幕是否需要更新
-static int max_instructions = 100000;     // 最大指令数
 
 // ==============================
 // Helper Functions
@@ -40,44 +29,10 @@ static inline uint32_t get_imm_s(uint32_t inst) {
 }
 
 // ==============================
-// Memory Access with Framebuffer
+// Memory Access
 // ==============================
 
 void mmio_write(uint32_t addr, uint32_t value, int len) {
-    // Framebuffer区域: [FB_BASE, FB_BASE + FB_SIZE)
-    if (addr >= FB_BASE && addr < FB_BASE + FB_SIZE) {
-        if (len == 4) {  // 字写入
-            uint32_t offset = addr - FB_BASE;
-            if (offset < FB_SIZE && (offset & 3) == 0) {
-                int idx = offset / 4;
-                if (idx < 400 * 300) {
-                    framebuffer[idx] = value;
-                    screen_dirty = 1;  // 标记屏幕需要更新
-                }
-            }
-        } else if (len == 1) {  // 字节写入
-            uint32_t offset = addr - FB_BASE;
-            if (offset < FB_SIZE) {
-                int idx = offset / 4;
-                uint32_t byte_offset = offset & 3;
-                uint8_t *pixel_bytes = (uint8_t*)&framebuffer[idx];
-                pixel_bytes[byte_offset] = (uint8_t)(value & 0xFF);
-                screen_dirty = 1;
-            }
-        } else if (len == 2) {  // 半字写入
-            uint32_t offset = addr - FB_BASE;
-            if (offset + 1 < FB_SIZE && (offset & 1) == 0) {
-                int idx = offset / 4;
-                uint32_t half_offset = (offset & 3) / 2;
-                uint16_t *pixel_half = (uint16_t*)&framebuffer[idx];
-                pixel_half[half_offset] = (uint16_t)(value & 0xFFFF);
-                screen_dirty = 1;
-            }
-        }
-        return;
-    }
-
-    // 普通RAM写入
     if (addr < MEM_SIZE) {
         switch (len) {
             case 1: 
@@ -98,37 +53,6 @@ void mmio_write(uint32_t addr, uint32_t value, int len) {
 }
 
 uint32_t mmio_read(uint32_t addr, int len) {
-    // Framebuffer读取
-    if (addr >= FB_BASE && addr < FB_BASE + FB_SIZE) {
-        if (len == 4) {
-            uint32_t offset = addr - FB_BASE;
-            if (offset < FB_SIZE && (offset & 3) == 0) {
-                int idx = offset / 4;
-                if (idx < 400 * 300) {
-                    return framebuffer[idx];
-                }
-            }
-        } else if (len == 1) {
-            uint32_t offset = addr - FB_BASE;
-            if (offset < FB_SIZE) {
-                int idx = offset / 4;
-                uint32_t byte_offset = offset & 3;
-                uint8_t *pixel_bytes = (uint8_t*)&framebuffer[idx];
-                return (uint32_t)pixel_bytes[byte_offset];
-            }
-        } else if (len == 2) {
-            uint32_t offset = addr - FB_BASE;
-            if (offset + 1 < FB_SIZE && (offset & 1) == 0) {
-                int idx = offset / 4;
-                uint32_t half_offset = (offset & 3) / 2;
-                uint16_t *pixel_half = (uint16_t*)&framebuffer[idx];
-                return (uint32_t)pixel_half[half_offset];
-            }
-        }
-        return 0;
-    }
-
-    // 普通RAM读取
     if (addr < MEM_SIZE) {
         switch (len) {
             case 1: 
@@ -146,37 +70,6 @@ uint32_t mmio_read(uint32_t addr, int len) {
         }
     }
     return 0;
-}
-
-// ==============================
-// Display Function using AM
-// ==============================
-
-void update_screen() {
-    if (!screen_dirty) return;
-    
-    // 获取屏幕配置
-    AM_GPU_CONFIG_T cfg = io_read(AM_GPU_CONFIG);
-    int w = cfg.width, h = cfg.height;
-    
-    // 确保framebuffer大小足够
-    if (w * h > 400 * 300) {
-        printf("Warning: Screen too large (%dx%d), using 400x300\n", w, h);
-        w = 400;
-        h = 300;
-    }
-    
-    // 更新屏幕 - 注意io_write的参数顺序
-    io_write(AM_GPU_FBDRAW, 0, 0, framebuffer, w, h, true);
-    screen_dirty = 0;
-}
-
-void clear_screen(uint32_t color) {
-    for (int i = 0; i < 400 * 300; i++) {
-        framebuffer[i] = color;
-    }
-    screen_dirty = 1;
-    update_screen();
 }
 
 // ==============================
@@ -271,7 +164,7 @@ void execute_instruction() {
                 case 0x2: // SW
                     mmio_write(addr, reg[RS2(inst)], 4);
                     break;
-                case 0x0: // SB
+                case 0x0: // SB (关键修复)
                     mmio_write(addr, reg[RS2(inst)] & 0xFF, 1);
                     break;
                 case 0x1: // SH
@@ -331,151 +224,179 @@ void load_binary(const char* filename) {
 }
 
 // ==============================
-// Main Function with GUI support
+// Debug Helpers
+// ==============================
+
+const char* reg_name(int i) {
+    static const char* names[] = {
+        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+        "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+        "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+        "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"
+    };
+    return (i < 32) ? names[i] : "???";
+}
+
+void print_instruction(uint32_t inst) {
+    uint8_t opcode = OPCODE(inst);
+    uint8_t rd = RD(inst);
+    uint8_t rs1 = RS1(inst);
+    uint8_t rs2 = RS2(inst);
+    uint8_t funct3 = FUNCT3(inst);
+    int32_t imm;
+    
+    switch (opcode) {
+        case 0x37: 
+            printf("LUI   %s, 0x%x", reg_name(rd), (inst & 0xFFFFF000)); 
+            break;
+        case 0x13: 
+            if (funct3 == 0) {
+                imm = get_imm_i(inst);
+                printf("ADDI  %s, %s, 0x%x", reg_name(rd), reg_name(rs1), imm);
+            }
+            break;
+        case 0x33:
+            if (funct3 == 0) 
+                printf("ADD   %s, %s, %s", reg_name(rd), reg_name(rs1), reg_name(rs2));
+            break;
+        case 0x03:
+            imm = get_imm_i(inst);
+            switch (funct3) {
+                case 0x2: printf("LW    %s, 0x%x(%s)", reg_name(rd), imm, reg_name(rs1)); break;
+                case 0x4: printf("LBU   %s, 0x%x(%s)", reg_name(rd), imm, reg_name(rs1)); break;
+                case 0x5: printf("LHU   %s, 0x%x(%s)", reg_name(rd), imm, reg_name(rs1)); break;
+                case 0x0: printf("LB    %s, 0x%x(%s)", reg_name(rd), imm, reg_name(rs1)); break;
+                default: printf("LOAD funct3=%d", funct3);
+            }
+            break;
+        case 0x23:
+            imm = get_imm_s(inst);
+            switch (funct3) {
+                case 0x2: printf("SW    %s, 0x%x(%s)", reg_name(rs2), imm, reg_name(rs1)); break;
+                case 0x0: printf("SB    %s, 0x%x(%s)", reg_name(rs2), imm, reg_name(rs1)); break;
+                case 0x1: printf("SH    %s, 0x%x(%s)", reg_name(rs2), imm, reg_name(rs1)); break;
+                default: printf("STORE funct3=%d", funct3);
+            }
+            break;
+        case 0x67:
+            imm = get_imm_i(inst);
+            printf("JALR  %s, %s, 0x%x", reg_name(rd), reg_name(rs1), imm);
+            break;
+        default: 
+            printf("UNKNOWN opcode=0x%02x", opcode);
+    }
+}
+
+// ==============================
+// Main Function - 增强版
 // ==============================
 
 int main(int argc, char* argv[]) {
-    if (argc != 2 && argc != 3) {
-        fprintf(stderr, "Usage: %s <program.bin> [max_instructions]\n", argv[0]);
-        fprintf(stderr, "Example: %s mem.bin 100000\n", argv[0]);
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <program.bin>\n", argv[0]);
         return 1;
     }
-    
-    // 解析最大指令数参数
-    if (argc == 3) {
-        max_instructions = atoi(argv[2]);
-    }
 
-    printf("RISC-V Emulator with Graphics Support\n");
-    printf("=====================================\n");
-    
-    // 初始化内存
+    // Initialize memory
     memset(memory, 0, MEM_SIZE);
     load_binary(argv[1]);
 
     // 初始化寄存器
     reg[0] = 0;  // x0 必须为0
     
-    // 启动执行
+    // Start execution
     pc = 0;
+    int max_instructions = 5000;  // 增加到5000条
     int instruction_count = 0;
-    int halt_detected = 0;
     uint32_t last_pc = 0xFFFFFFFF;
-    uint32_t halt_address = 0x1218;  // 常见halt地址
+    int halt_loop_count = 0;
     
     printf("\nStarting execution...\n");
-    printf("Max instructions: %d\n", max_instructions);
-    printf("=====================================\n");
-    
-    // 初始化AM
-    ioe_init();
-    
-    // 获取屏幕尺寸
-    AM_GPU_CONFIG_T cfg = io_read(AM_GPU_CONFIG);
-    int screen_width = cfg.width;
-    int screen_height = cfg.height;
-    
-    printf("Screen resolution: %dx%d\n", screen_width, screen_height);
-    printf("Framebuffer: 400x300 (hardcoded)\n");
-    
-    // 清屏
-    clear_screen(0x00000000);  // 黑色
-    
-    // 主执行循环
+    printf("=====================\n");
+
     while (instruction_count < max_instructions) {
         instruction_count++;
         
         // 检查PC范围
         if (pc >= MEM_SIZE) {
-            printf("\nERROR: PC out of RAM range: 0x%08x\n", pc);
+            printf("\nPC out of RAM range: 0x%08x\n", pc);
             break;
         }
-        
-        // 检测halt地址
-        if (pc == halt_address) {
-            if (!halt_detected) {
-                printf("\nINFO: Reached halt address 0x%08x\n", pc);
-                halt_detected = 1;
-            }
-            // 如果是halt循环，等待几轮后退出
-            static int halt_count = 0;
-            if (halt_count++ > 10) {
-                printf("Detected halt loop, stopping execution\n");
-                break;
-            }
-        } else {
-            halt_detected = 0;
-        }
+
+        uint32_t inst = *(uint32_t*)(&memory[pc]);
         
         // 检测无限循环
         if (pc == last_pc) {
-            static int same_pc_count = 0;
-            if (same_pc_count++ > 100) {
-                printf("\nWARNING: PC stuck at 0x%08x\n", pc);
+            halt_loop_count++;
+            if (halt_loop_count > 10) {
+                printf("\nDetected loop at PC=0x%08x. Stopping.\n", pc);
                 break;
             }
+        } else {
+            halt_loop_count = 0;
         }
         last_pc = pc;
         
-        uint32_t inst = *(uint32_t*)(&memory[pc]);
-        
         // 检查 ebreak
         if (inst == EBREAK_OPCODE) {
-            printf("\nSUCCESS: EBREAK reached at PC=0x%08x\n", pc);
-            printf("Program terminated normally\n");
+            printf("\nEBREAK hit at PC=0x%08x. Halting.\n", pc);
             break;
         }
-        
-        // 执行指令
-        execute_instruction();
-        
-        // 定期更新屏幕
-        if (instruction_count % 1000 == 0) {
-            update_screen();
+
+        // 每500条指令打印一次进度
+        if (instruction_count % 500 == 0) {
+            printf("[%d] Executed %d instructions...\n", instruction_count, instruction_count);
         }
         
-        // 显示进度
-        if (instruction_count % 10000 == 0) {
-            printf("Progress: %d instructions\n", instruction_count);
+        // 详细的指令跟踪（前100条和最后100条）
+        if (instruction_count <= 100 || instruction_count > max_instructions - 100) {
+            printf("[%04d] PC=0x%08x: ", instruction_count, pc);
+            print_instruction(inst);
+            printf("\n");
+            
+            // 保存寄存器状态（用于比较）
+            uint32_t old_regs[32];
+            memcpy(old_regs, reg, sizeof(reg));
+            
+            // 执行指令
+            execute_instruction();
+            
+            // 显示变化的寄存器
+            int changes = 0;
+            for (int i = 1; i < 32; i++) {
+                if (reg[i] != old_regs[i]) {
+                    if (changes == 0) printf("       Changed: ");
+                    else printf(", ");
+                    printf("%s:0x%08x", reg_name(i), reg[i]);
+                    changes++;
+                }
+            }
+            if (changes > 0) printf("\n");
+        } else {
+            // 简单执行，不打印细节
+            execute_instruction();
         }
     }
-    
-    // 最终屏幕更新
-    update_screen();
-    
-    // 最终报告
-    printf("\n=====================================\n");
-    printf("EXECUTION COMPLETE\n");
-    printf("=====================================\n");
-    printf("Program: %s\n", argv[1]);
-    printf("Instructions executed: %d\n", instruction_count);
-    printf("Final PC: 0x%08x\n", pc);
-    printf("\n");
-    
+
     if (instruction_count >= max_instructions) {
-        printf("NOTE: Stopped due to instruction limit.\n");
+        printf("\nReached maximum instruction count (%d).\n", max_instructions);
     }
+
+    // 显示最终结果
+    printf("\n=====================\n");
+    printf("Execution summary:\n");
+    printf("Total instructions: %d\n", instruction_count);
+    printf("Final PC: 0x%08x\n", pc);
     
-    // 显示重要寄存器
-    printf("\nImportant register values:\n");
-    const char* reg_names[] = {"zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
-                              "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5"};
-    for (int i = 0; i < 16; i++) {
-        printf("x%2d (%4s) = 0x%08x", i, reg_names[i], reg[i]);
-        if (i % 4 == 3) printf("\n");
-        else printf("  |  ");
+    // 打印所有寄存器
+    printf("\nAll registers:\n");
+    for (int i = 0; i < 32; i += 4) {
+        for (int j = 0; j < 4 && i+j < 32; j++) {
+            int idx = i + j;
+            printf("x%2d (%5s)=0x%08x  ", idx, reg_name(idx), reg[idx]);
+        }
+        printf("\n");
     }
-    printf("\n");
-    
-    // 保持窗口打开
-    printf("\nGUI window is open. Close window to exit.\n");
-    printf("Press Ctrl+C in terminal to exit.\n");
-    
-    // 简单的事件循环，保持窗口响应
-    while (1) {
-        update_screen();
-        usleep(100000);  // Hibernate 100ms
-    }
-    
+
     return 0;
 }

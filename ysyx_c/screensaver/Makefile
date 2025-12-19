@@ -1,3 +1,3 @@
-NAME = screensaver2
-SRCS = screensaver2.c
+NAME = screensaver
+SRCS = screensaver.c
 include $(AM_HOME)/Makefile
