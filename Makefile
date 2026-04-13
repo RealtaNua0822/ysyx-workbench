@@ -8,7 +8,9 @@ GITFLAGS = -q --author='$(TRACER) <tracer@ysyx.org>' --no-verify --allow-empty
 
 YSYX_HOME = $(NEMU_HOME)/..
 WORK_BRANCH = $(shell git rev-parse --abbrev-ref HEAD)
-WORK_INDEX = $(YSYX_HOME)/.git/index.$(WORK_BRANCH)
+WORK_BRANCH_REF := $(shell git rev-parse --symbolic-full-name HEAD 2>/dev/null)
+WORK_BRANCH_HASH := $(shell printf '%s' '$(WORK_BRANCH_REF)' | git hash-object --stdin)
+WORK_INDEX := $(YSYX_HOME)/.git/index.$(WORK_BRANCH_HASH)
 TRACER_BRANCH = $(TRACER)
 
 LOCK_DIR = $(YSYX_HOME)/.git/
