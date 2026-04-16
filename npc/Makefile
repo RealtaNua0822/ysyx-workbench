@@ -2,7 +2,7 @@
 VERILATOR = verilator
 
 # 2. 定义编译参数（让 Makefile 更整洁）
-VERILATOR_FLAGS = -Wall --cc --exe --build
+VERILATOR_FLAGS = -Wall --cc --exe --build --trace
 
 # 3. 这里的 include 可能会引入路径报错的 git_commit，我们手动定义一个空的以防万一
 -include ../Makefile
