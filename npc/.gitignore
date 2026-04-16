@@ -10,3 +10,5 @@
 !.gitignore
 !README.md
 build/
+# 在文件末尾添加
+obj_dir/
