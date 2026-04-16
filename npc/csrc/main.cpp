@@ -17,7 +17,8 @@ int main(int argc, char** argv) {
         top->eval();
         printf("a = %d, b = %d, f = %d\n", a, b, top->f);
     }
-
+	// 这是一个测试自动提交的注释
+	printf("Hello, YSYX NPC Sim!\n");
     delete top;
     delete contextp;
     return 0;
